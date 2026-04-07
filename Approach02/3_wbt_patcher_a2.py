@@ -25,6 +25,7 @@ import os
 import sys
 import json
 import logging
+import subprocess
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -156,11 +157,16 @@ class WBTPatcher:
         for i, clip_shp in enumerate(clip_files):
             log.info(f"--- Clip {i+1}/{len(clip_files)}: {clip_shp.name} ---")
 
+            # Step 1: Clip the point cloud
             clipped_laz = self._clip_pointcloud(clip_shp, i)
             if clipped_laz is None:
                 continue
 
-            wbt_raster = self._run_wbt_gridding(clipped_laz, i)
+            # Step 2: NEW - Drop Black Points
+            clean_laz = self._drop_black_points(clipped_laz, i)
+
+            # Step 3: Run WBT using the CLEANED laz
+            wbt_raster = self._run_wbt_gridding(clean_laz, i)
             if wbt_raster:
                 self.wbt_outputs.append(wbt_raster)
 
@@ -261,6 +267,30 @@ class WBTPatcher:
         except Exception as e:
             log.error(f"GDAL fallback also failed: {e}")
             return ""
+    
+    def _drop_black_points(self, input_laz: str, idx: int) -> str:
+        """Uses las2las to drop RGB 0 0 0 points before WBT interpolation."""
+        output_laz = str(Path(self.config.output_dir) / f"clipped_clean_{idx}.laz")
+        
+        command = [
+            "las2las",
+            "-i", input_laz,
+            "-o", output_laz,
+            "-drop_RGB_red", "0", "0",
+            "-drop_RGB_green", "0", "0",
+            "-drop_RGB_blue", "0", "0",
+            "-filter_and"
+        ]
+        
+        try:
+            log.info(f"Running las2las to drop black points for patch {idx}...")
+            subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            log.info(f"Black points dropped → {output_laz}")
+            return output_laz
+        except subprocess.CalledProcessError as e:
+            log.error(f"las2las failed: {e.stderr.decode()}")
+            # Fallback to the original clipped laz if filtering fails
+            return input_laz
 
 
 # ---------------------------------------------------------------------------
